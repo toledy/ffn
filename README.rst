@@ -1,5 +1,8 @@
 .. image:: http://pmorissette.github.io/ffn/_static/logo.png
 
+.. image:: https://travis-ci.org/pmorissette/ffn.svg?branch=master
+    :target: https://travis-ci.org/pmorissette/ffn
+
 ffn - Financial Functions for Python
 ====================================
 
@@ -51,6 +54,13 @@ Read the docs at http://pmorissette.github.io/ffn
 
 - `Quickstart <http://pmorissette.github.io/ffn/quick.html>`__
 - `Full API <http://pmorissette.github.io/ffn/ffn.html>`__
+
+Special Thanks
+--------------
+
+A special thanks to the following contributors for their involvement with the project:
+
+* Jordan Platts `@JordanPlatts <https://github.com/JordanPlatts>`_ 
 
 License
 -------

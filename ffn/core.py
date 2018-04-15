@@ -38,8 +38,9 @@ class PerformanceStats(object):
 
     Args:
         * prices (Series): A price series.
-        * rf (float): Risk-free rate used in various calculation. Should be
-            expressed as a yearly (annualized) return
+        * rf (float, Series): Risk-free rate used in various calculation. Should be
+            expressed as a yearly (annualized) return if it is a float. Otherwise
+            rf should be a price series.
 
     Attributes:
         * name (str): Name, derived from price series name
@@ -97,10 +98,7 @@ class PerformanceStats(object):
             ['mtd', '3m', '6m', 'ytd', '1y', '3y', '5y', '10y', 'incep'])
         self.lookback_returns.name = self.name
 
-        st = self._stats()
-        self.stats = pd.Series(
-            [getattr(self, x[0]) for x in st if x[0] is not None],
-            [x[0] for x in st if x[0] is not None]).drop_duplicates()
+        self.stats = self._create_stats_series()
 
     def _calculate(self, obj):
         # default values
@@ -187,8 +185,16 @@ class PerformanceStats(object):
 
         self.daily_mean = r.mean() * 252
         self.daily_vol = r.std() * np.sqrt(252)
-        self.daily_sharpe = r.calc_sharpe(rf=self.rf, nperiods=252)
-        self.daily_sortino = calc_sortino_ratio(r, rf=self.rf, nperiods=252)
+
+        if type(self.rf) is float:
+            self.daily_sharpe = r.calc_sharpe(rf=self.rf, nperiods=252)
+            self.daily_sortino = calc_sortino_ratio(r, rf=self.rf, nperiods=252)
+        # rf is a price series
+        else:
+            _rf_daily_price_returns = self.rf.to_returns()
+            self.daily_sharpe = r.calc_sharpe(rf=_rf_daily_price_returns, nperiods=252)
+            self.daily_sortino = calc_sortino_ratio(r, rf=_rf_daily_price_returns, nperiods=252)
+
         self.best_day = r.max()
         self.worst_day = r.min()
 
@@ -226,8 +232,15 @@ class PerformanceStats(object):
 
         self.monthly_mean = mr.mean() * 12
         self.monthly_vol = mr.std() * np.sqrt(12)
-        self.monthly_sharpe = mr.calc_sharpe(rf=self.rf, nperiods=12)
-        self.monthly_sortino = calc_sortino_ratio(mr, rf=self.rf, nperiods=12)
+
+        if type(self.rf) is float:
+            self.monthly_sharpe = mr.calc_sharpe(rf=self.rf, nperiods=12)
+            self.monthly_sortino = calc_sortino_ratio(mr, rf=self.rf, nperiods=12)
+        # rf is a price series
+        else:
+            _rf_monthly_price_returns = self.rf.resample('M').last().to_returns()
+            self.monthly_sharpe = mr.calc_sharpe(rf=_rf_monthly_price_returns, nperiods=12)
+            self.monthly_sortino = calc_sortino_ratio(mr, rf=_rf_monthly_price_returns, nperiods=12)
         self.best_month = mr.max()
         self.worst_month = mr.min()
 
@@ -293,9 +306,17 @@ class PerformanceStats(object):
 
         self.yearly_mean = yr.mean()
         self.yearly_vol = yr.std()
-        self.yearly_sortino = calc_sortino_ratio(yr, rf=self.rf, nperiods=1)
-        if self.yearly_vol > 0:
-            self.yearly_sharpe = yr.calc_sharpe(rf=self.rf, nperiods=1)
+
+        if type(self.rf) is float:
+            if self.yearly_vol > 0:
+                self.yearly_sharpe = yr.calc_sharpe(rf=self.rf, nperiods=1)
+            self.yearly_sortino = calc_sortino_ratio(yr, rf=self.rf, nperiods=1)
+        # rf is a price series
+        else:
+            _rf_yearly_price_returns = self.rf.resample('A').last().to_returns()
+            if self.yearly_vol > 0:
+                self.yearly_sharpe = yr.calc_sharpe(rf=_rf_yearly_price_returns, nperiods=1)
+            self.yearly_sortino = calc_sortino_ratio(yr, rf=_rf_yearly_price_returns, nperiods=1)
 
         self.best_year = yr.max()
         self.worst_year = yr.min()
@@ -417,7 +438,8 @@ class PerformanceStats(object):
         provided.
         """
         print('Stats for %s from %s - %s' % (self.name, self.start, self.end))
-        print('Annual risk-free rate considered: %s' % (fmtp(self.rf)))
+        if type(self.rf) is float:
+            print('Annual risk-free rate considered: %s' % (fmtp(self.rf)))
         print('Summary:')
         data = [[fmtp(self.total_return), fmtn(self.daily_sharpe),
                  fmtp(self.cagr), fmtp(self.max_drawdown)]]
@@ -543,6 +565,26 @@ class PerformanceStats(object):
             freq = 'a'
         return self.daily_prices.asfreq(freq, 'ffill')
 
+    def _create_stats_series(self):
+        stats = self._stats()
+
+        short_names = []
+        values = []
+
+        for stat in stats:
+            k, n, f = stat
+
+            # blank row
+            if k is None:
+                continue
+            elif k == 'rf' and not type(self.rf) == float:
+                continue
+
+            short_names.append(k)
+            raw = getattr(self, k)
+            values.append(raw)
+        return pd.Series(values, short_names).drop_duplicates()
+
     def to_csv(self, sep=',', path=None):
         """
         Returns a CSV string with appropriate formatting.
@@ -567,6 +609,8 @@ class PerformanceStats(object):
             if k is None:
                 row = [''] * len(data[0])
                 data.append(sep.join(row))
+                continue
+            elif k == 'rf' and not type(self.rf) == float:
                 continue
 
             row = [n]
@@ -740,7 +784,7 @@ class GroupStats(dict):
         this GroupStats object.
 
         Args:
-            * rf (float): Annual risk-free rate
+            * rf (float, Series): Annual risk-free rate or risk-free rate price series
         """
         for key in self._names:
             self[key].set_riskfree_rate(rf)
@@ -789,7 +833,11 @@ class GroupStats(dict):
             row = [n]
             for key in self._names:
                 raw = getattr(self[key], k)
-                if f is None:
+
+                # if rf is a series print nan
+                if k == 'rf' and not type(raw) == float:
+                    row.append(np.nan)
+                elif f is None:
                     row.append(raw)
                 elif f == 'p':
                     row.append(fmtp(raw))
@@ -1166,21 +1214,22 @@ def calc_sharpe(returns, rf=0., nperiods=None, annualize=True):
     """
     Calculates the Sharpe ratio.
 
-    If rf is non-zero, you must specify nperiods. In this case, rf is assumed
+    If rf is non-zero and a float, you must specify nperiods. In this case, rf is assumed
     to be expressed in yearly (annualized) terms.
 
     Args:
         * returns (Series, DataFrame): Input return series
-        * rf (float): Risk-free rate expressed as a yearly (annualized) return
+        * rf (float, Series): Risk-free rate expressed as a yearly (annualized) return or return series
         * nperiods (int): Frequency of returns (252 for daily, 12 for monthly,
             etc.)
 
     """
-    if rf != 0 and nperiods is None:
+    if type(rf) is float and rf != 0 and nperiods is None:
         raise Exception('Must provide nperiods if rf != 0')
 
     er = returns.to_excess_returns(rf, nperiods=nperiods)
-    res = er.mean() / er.std()
+    std = er.std()
+    res = np.divide(er.mean(), std)
 
     if annualize:
         if nperiods is None:
@@ -1765,7 +1814,7 @@ def limit_weights(weights, limit=0.1):
     res[res > limit] = limit
     res[res < limit] = ok
 
-    if not np.all([x <= limit for x in res]):
+    if any(x > limit for x in res):
         return limit_weights(res, limit=limit)
 
     return res
@@ -1965,22 +2014,25 @@ def deannualize(returns, nperiods):
     return np.power(1 + returns, 1. / nperiods) - 1.
 
 
-def calc_sortino_ratio(returns, rf=0, nperiods=None, annualize=True):
+def calc_sortino_ratio(returns, rf=0., nperiods=None, annualize=True):
     """
     Calculates the sortino ratio given a series of returns
 
     Args:
         * returns (Series or DataFrame): Returns
-        * rf (float): Risk-free rate expressed in yearly (annualized) terms.
+        * rf (float, Series): Risk-free rate expressed in yearly (annualized) terms or return series.
         * nperiods (int): Number of periods used for annualization. Must be
-            provided if rf is non-zero
+            provided if rf is non-zero and rf is not a price series
 
     """
-    if rf != 0 and nperiods is None:
-        raise Exception('nperiods must be set if rf != 0')
+    if type(rf) is float and rf != 0 and nperiods is None:
+        raise Exception('nperiods must be set if rf != 0 and rf is not a price series')
 
     er = returns.to_excess_returns(rf, nperiods=nperiods)
-    res = er.mean() / er[er < 0].std()
+
+    negative_returns = np.minimum(returns, 0.)
+    std = np.std(negative_returns)
+    res = np.divide(er.mean(), std)
 
     if annualize:
         if nperiods is None:
@@ -1996,14 +2048,14 @@ def to_excess_returns(returns, rf, nperiods=None):
 
     Args:
         * returns (Series, DataFrame): Returns
-        * rf (float, Series, DataFrame): Risk-Free rate(s)
+        * rf (float, Series): Risk-Free rate(s) expressed in annualized term or return series
         * nperiods (int): Optional. If provided, will convert rf to different
-            frequency using deannualize
+            frequency using deannualize only if rf is a float
     Returns:
         * excess_returns (Series, DataFrame): Returns - rf
 
     """
-    if nperiods is not None:
+    if type(rf) is float and nperiods is not None:
         _rf = deannualize(rf, nperiods)
     else:
         _rf = rf
@@ -2044,13 +2096,13 @@ def to_ulcer_performance_index(prices, rf=0., nperiods=None):
 
     Args:
         * prices (Series, DataFrame): Prices
-        * rf (float): Risk-free rate of return. Assumed to be expressed in
-            yearly (annualized) terms
+        * rf (float, Series): Risk-free rate of return. Assumed to be expressed in
+            yearly (annualized) terms or return series
         * nperiods (int): Used to deannualize rf if rf is provided (non-zero)
 
     """
-    if rf != 0 and nperiods is None:
-        raise Exception('nperiods must be set if rf != 0')
+    if type(rf) is float and rf != 0 and nperiods is None:
+        raise Exception('nperiods must be set if rf != 0 and rf is not a price series')
 
     er = prices.to_returns().to_excess_returns(rf, nperiods=nperiods)
 
